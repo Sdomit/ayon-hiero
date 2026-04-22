@@ -5,8 +5,6 @@ import pyblish.api
 
 
 class CollectClipEffects(pyblish.api.InstancePlugin):
-    """Collect soft effects instances."""
-
     order = pyblish.api.CollectorOrder - 0.078
     label = "Collect Clip Effects Instances"
     families = ["clip"]
@@ -14,6 +12,57 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
 
     effect_categories = []
     effect_tracks = []
+
+    def _safe_deepcopy(self, value):
+        if isinstance(value, dict):
+            output = {}
+            for key, item in value.items():
+                try:
+                    output[key] = self._safe_deepcopy(item)
+                except Exception:
+                    continue
+            return output
+
+        if isinstance(value, list):
+            output = []
+            for item in value:
+                try:
+                    output.append(self._safe_deepcopy(item))
+                except Exception:
+                    continue
+            return output
+
+        if isinstance(value, tuple):
+            output = []
+            for item in value:
+                try:
+                    output.append(self._safe_deepcopy(item))
+                except Exception:
+                    continue
+            return tuple(output)
+
+        if isinstance(value, set):
+            output = set()
+            for item in value:
+                try:
+                    output.add(self._safe_deepcopy(item))
+                except Exception:
+                    continue
+            return output
+
+        return copy.deepcopy(value)
+
+    def _get_inherited_instance_data(self, instance):
+        inherit_data = {
+            key: value for key, value in instance.data.items()
+            if key not in (
+                "clipEffectItems",
+                "trackItem",
+                "transientData",
+                "tracksEffectItems",
+            )
+        }
+        return self._safe_deepcopy(inherit_data)
 
     def process(self, instance):
         if instance.data["creator_attributes"]["publish_effects"] == "ignore_effects":
@@ -32,7 +81,6 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
         track_item = instance.data["trackItem"]
         product_name = instance.data["productName"]
 
-        # frame range
         self.handle_start = instance.data["handleStart"]
         self.handle_end = instance.data["handleEnd"]
         self.clip_in = int(track_item.timelineIn())
@@ -45,17 +93,13 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
         tracks_effect_items = instance.context.data.get("tracksEffectItems")
         clip_effect_items = instance.data.get("clipEffectItems")
 
-        # add clips effects to track's:
         if clip_effect_items:
             tracks_effect_items[track_index] = clip_effect_items
 
-        # process all effects and divide them to instance
         for _track_index, sub_track_items in tracks_effect_items.items():
-            # skip if track index is the same as review track index
             if review and review_track_index == _track_index:
                 continue
             for sitem in sub_track_items:
-                # make sure this subtrack item is relative of track item
                 if ((track_item not in sitem.linkedItems())
                         and (len(sitem.linkedItems()) > 0)):
                     continue
@@ -67,12 +111,10 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
                 if effect:
                     effects.update(effect)
 
-        # Publish effect only mode, disable plate integration.
         if instance.data["creator_attributes"]["publish_effects"] == "publish_only_effects":
             self.log.debug("Remove instance, only effects are requested.")
             instance.context.remove(instance)
 
-        # skip any without effects
         if not effects:
             self.log.info("No effects found for current clip.")
             return
@@ -87,7 +129,6 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
 
         product_name_split.insert(0, "effect")
 
-        # Categorize effects by class.
         effect_categories = {
             x["name"]: x["effect_classes"] for x in self.effect_categories
         }
@@ -102,7 +143,6 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
             if key == "assignTo":
                 continue
 
-            # Some classes can have a number in them. Like Text2.
             found_cls = ""
             for cls in category_by_effect.keys():
                 if cls in value["class"]:
@@ -113,7 +153,6 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
 
             effects_categorized[category_by_effect[found_cls]][key] = value
 
-        # Categorize effects by track name.
         track_names_by_category = {
             x["name"]: x["track_names"] for x in self.effect_tracks
         }
@@ -130,7 +169,6 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
                 else:
                     effects_categorized[category] = {key: value}
 
-        # Ensure required `assignTo` data member exists.
         categories = list(effects_categorized.keys())
         for category in categories:
             if not effects_categorized[category]:
@@ -139,7 +177,6 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
 
             effects_categorized[category]["assignTo"] = effects["assignTo"]
 
-        # If no effects have been categorized, publish all effects together.
         if not effects_categorized:
             effects_categorized[""] = effects
 
@@ -147,20 +184,10 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
             product_name = "".join(product_name_split)
             product_name += category.capitalize()
 
-            # create new effect instance inheriting instance data
-            inherit_data = {
-                key: value for key, value in instance.data.items()
-                if key not in (
-                    "clipEffectItems",
-                    "trackItem",
-                    "transientData",
-                )
-            }
-            data = copy.deepcopy(inherit_data)
+            data = self._get_inherited_instance_data(instance)
 
             data.update({
                 "productName": product_name,
-                # TODO add support for product types
                 "productType": product_base_type,
                 "productBaseType": product_base_type,
                 "family": product_base_type,
@@ -174,7 +201,6 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
                 "transientData": instance.data.get("transientData", {}),
             })
 
-            # create new instance
             _instance = instance.context.create_instance(**data)
             self.log.info("Created instance `{}`".format(_instance))
             self.log.debug("instance.data `{}`".format(_instance.data))
@@ -201,13 +227,11 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
 
     def add_effect(self, track_index, sitem):
         track = sitem.parentTrack().name()
-        # node serialization
         node = sitem.node()
         node_serialized = self.node_serialization(node)
         node_name = sitem.name()
         node_class = node.Class()
 
-        # collect timelineIn/Out
         effect_t_in = int(sitem.timelineIn())
         effect_t_out = int(sitem.timelineOut())
 
@@ -230,7 +254,6 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
     def node_serialization(self, node):
         node_serialized = {}
 
-        # adding ignoring knob keys
         _ignoring_keys = ['invert_mask', 'help', 'mask',
                           'xpos', 'ypos', 'layer', 'process_mask', 'channel',
                           'channels', 'maskChannelMask', 'maskChannelInput',
@@ -238,23 +261,13 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
                           'postage_stamp_frame', 'maskChannel', 'export_cc',
                           'select_cccid', 'mix', 'version', 'matrix']
 
-        # loop through all knobs and collect not ignored
-        # and any with any value
         for knob in node.knobs().keys():
-            # skip nodes in ignore keys
             if knob in _ignoring_keys:
                 continue
 
-            # Hiero 15.1v3
-            # This seems to be a bug. The "file" knob
-            # is always returned as animated by the API.
-            # (even tho it's not even possible
-            # to set this knob as animated from the UI).
             is_file_knob = knob == "file"
 
-            # get animation if node is animated
             if not is_file_knob and node[knob].isAnimated():
-                # grab animation including handles
                 knob_anim = [node[knob].getValueAt(i)
                              for i in range(
                              self.clip_in_h, self.clip_out_h + 1)]
