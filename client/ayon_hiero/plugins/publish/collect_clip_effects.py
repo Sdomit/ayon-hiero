@@ -15,6 +15,85 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
     effect_categories = []
     effect_tracks = []
 
+    _SKIP = object()
+
+    def _safe_deepcopy(self, value, key_path="root"):
+        """Deep-copy only serializable values.
+
+        Hiero native objects like EffectTrackItem cannot be deep-copied.
+        This recursively copies plain containers and skips anything that
+        raises during deepcopy.
+        """
+        if isinstance(value, dict):
+            output = {}
+            for key, item in value.items():
+                safe_item = self._safe_deepcopy(item, f"{key_path}.{key}")
+                if safe_item is self._SKIP:
+                    continue
+                output[key] = safe_item
+            return output
+
+        if isinstance(value, list):
+            output = []
+            for index, item in enumerate(value):
+                safe_item = self._safe_deepcopy(item, f"{key_path}[{index}]")
+                if safe_item is self._SKIP:
+                    continue
+                output.append(safe_item)
+            return output
+
+        if isinstance(value, tuple):
+            output = []
+            for index, item in enumerate(value):
+                safe_item = self._safe_deepcopy(item, f"{key_path}[{index}]")
+                if safe_item is self._SKIP:
+                    continue
+                output.append(safe_item)
+            return tuple(output)
+
+        if isinstance(value, set):
+            output = set()
+            for index, item in enumerate(value):
+                safe_item = self._safe_deepcopy(item, f"{key_path}[{index}]")
+                if safe_item is self._SKIP:
+                    continue
+                output.add(safe_item)
+            return output
+
+        try:
+            return copy.deepcopy(value)
+        except Exception as exc:
+            self.log.debug(
+                "Skipping non-serializable value at `%s` of type `%s`: %s",
+                key_path,
+                type(value).__name__,
+                exc
+            )
+            return self._SKIP
+
+    def _get_inherited_instance_data(self, instance):
+        excluded_keys = {
+            "clipEffectItems",
+            "trackItem",
+            "transientData",
+            "tracksEffectItems",
+        }
+
+        inherit_data = {}
+        for key, value in instance.data.items():
+            if key in excluded_keys:
+                continue
+
+            safe_value = self._safe_deepcopy(value, key)
+            if safe_value is self._SKIP:
+                continue
+
+            inherit_data[key] = safe_value
+
+        return inherit_data
+
+
+
     def process(self, instance):
         if instance.data["creator_attributes"]["publish_effects"] == "ignore_effects":
             self.log.info("Effects collection/publish is disabled for instance")
@@ -148,15 +227,7 @@ class CollectClipEffects(pyblish.api.InstancePlugin):
             product_name += category.capitalize()
 
             # create new effect instance inheriting instance data
-            inherit_data = {
-                key: value for key, value in instance.data.items()
-                if key not in (
-                    "clipEffectItems",
-                    "trackItem",
-                    "transientData",
-                )
-            }
-            data = copy.deepcopy(inherit_data)
+            data = self._get_inherited_instance_data(instance)
 
             data.update({
                 "productName": product_name,
